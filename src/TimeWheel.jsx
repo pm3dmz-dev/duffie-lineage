@@ -53,6 +53,50 @@ export default function TimeWheel() {
 
   const isNarrow = vw < 720;
 
+  // Export the current wheel as a high-res PNG
+  const exportPNG = async (scale = 3) => {
+    const svgEl = svgRef.current;
+    if (!svgEl) return;
+
+    // Clone the SVG so we don't mutate the live one
+    const clone = svgEl.cloneNode(true);
+    // Set explicit pixel dimensions and a solid background
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    clone.setAttribute('width', W);
+    clone.setAttribute('height', H);
+    // Inject background rect so PNG isn't transparent
+    const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    bg.setAttribute('x', 0); bg.setAttribute('y', 0);
+    bg.setAttribute('width', W); bg.setAttribute('height', H);
+    bg.setAttribute('fill', C.bg);
+    clone.insertBefore(bg, clone.firstChild);
+
+    const xml = new XMLSerializer().serializeToString(clone);
+    const svg64 = btoa(unescape(encodeURIComponent(xml)));
+    const imgSrc = `data:image/svg+xml;base64,${svg64}`;
+
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = W * scale;
+      canvas.height = H * scale;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = C.bg;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = 'duffie-academic-lineage.png';
+      a.click();
+    };
+    img.onerror = (e) => {
+      console.error('PNG export failed', e);
+      alert('Export failed. Try again or take a screenshot instead.');
+    };
+    img.src = imgSrc;
+  };
+
   const nodes = useMemo(() => {
     const sorted = [...ADVISEES].sort((a, b) => a.year - b.year);
     const N = sorted.length;
@@ -617,6 +661,21 @@ export default function TimeWheel() {
                 }}
               >CLEAR</button>
             )}
+            <button
+              onClick={() => exportPNG(3)}
+              title="Download a high-resolution PNG of the current view"
+              style={{
+                fontFamily: 'inherit',
+                fontSize: 11,
+                padding: '4px 10px',
+                background: 'transparent',
+                color: C.textDim,
+                border: `1px solid ${C.panelEdge}`,
+                borderRadius: 12,
+                cursor: 'pointer',
+                letterSpacing: '0.5px',
+              }}
+            >PNG</button>
           </div>
         </div>
       </div>
