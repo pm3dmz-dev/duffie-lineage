@@ -200,10 +200,23 @@ export default function TimeWheel() {
   useEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
-    // Drag mode: 'pan' if down near center, 'rotate' if down near rim, null when not dragging
+    // Drag mode: 'pan' if down near center, 'rotate' if down near rim, 'pinch' for 2-finger zoom
     let mode = null;
     let last = { x: 0, y: 0 };
     let lastAngle = 0;
+    let pinchStartDist = 0;
+    let pinchStartScale = 1;
+
+    // Extract clientX/clientY from either mouse or touch event
+    const getPoint = (e) => {
+      if (e.touches && e.touches.length > 0) {
+        return { clientX: e.touches[0].clientX, clientY: e.touches[0].clientY };
+      }
+      if (e.changedTouches && e.changedTouches.length > 0) {
+        return { clientX: e.changedTouches[0].clientX, clientY: e.changedTouches[0].clientY };
+      }
+      return { clientX: e.clientX, clientY: e.clientY };
+    };
 
     // Returns { dx, dy, dist } where dx,dy are pixel offsets from the visible
     // center of the svg element on the page
@@ -211,9 +224,26 @@ export default function TimeWheel() {
       const rect = svg.getBoundingClientRect();
       const cxPx = rect.left + rect.width / 2;
       const cyPx = rect.top + rect.height / 2;
-      const dx = e.clientX - cxPx;
-      const dy = e.clientY - cyPx;
+      const pt = getPoint(e);
+      const dx = pt.clientX - cxPx;
+      const dy = pt.clientY - cyPx;
       return { dx, dy, dist: Math.sqrt(dx * dx + dy * dy) };
+    };
+
+    // Distance between two touch points (for pinch zoom)
+    const touchDistance = (e) => {
+      if (!e.touches || e.touches.length < 2) return 0;
+      const a = e.touches[0], b = e.touches[1];
+      const dx = a.clientX - b.clientX;
+      const dy = a.clientY - b.clientY;
+      return Math.sqrt(dx * dx + dy * dy);
+    };
+
+    // Midpoint of two touch points
+    const touchMidpoint = (e) => {
+      if (!e.touches || e.touches.length < 2) return null;
+      const a = e.touches[0], b = e.touches[1];
+      return { clientX: (a.clientX + b.clientX) / 2, clientY: (a.clientY + b.clientY) / 2 };
     };
 
     const onWheel = (e) => {
@@ -233,12 +263,18 @@ export default function TimeWheel() {
       });
     };
 
-    const onDown = (e) => {
+    const startDrag = (e) => {
+      // Two fingers = pinch zoom mode
+      if (e.touches && e.touches.length >= 2) {
+        mode = 'pinch';
+        pinchStartDist = touchDistance(e);
+        // Read current scale from current transform via setter trick
+        setTransform(t => { pinchStartScale = t.k; return t; });
+        return;
+      }
       const { dist } = offsetFromCenter(e);
       const rect = svg.getBoundingClientRect();
       const visibleR = Math.min(rect.width, rect.height) / 2;
-      // Inner ~50% of visible radius = pan, outer = rotate. Threshold favors rotation
-      // because that's the more common interaction users will want.
       const rotationThreshold = visibleR * 0.5;
       if (dist > rotationThreshold) {
         mode = 'rotate';
@@ -246,46 +282,78 @@ export default function TimeWheel() {
         lastAngle = Math.atan2(off.dy, off.dx);
       } else {
         mode = 'pan';
-        last = { x: e.clientX, y: e.clientY };
+        const pt = getPoint(e);
+        last = { x: pt.clientX, y: pt.clientY };
       }
     };
 
-    const onMove = (e) => {
+    const moveDrag = (e) => {
       if (!mode) return;
+      if (mode === 'pinch') {
+        if (!e.touches || e.touches.length < 2) return;
+        e.preventDefault();
+        const newDist = touchDistance(e);
+        if (pinchStartDist === 0) return;
+        const scaleRatio = newDist / pinchStartDist;
+        const mid = touchMidpoint(e);
+        setTransform(t => {
+          const newK = Math.min(5, Math.max(0.3, pinchStartScale * scaleRatio));
+          const rect = svg.getBoundingClientRect();
+          const mx = mid.clientX - rect.left;
+          const my = mid.clientY - rect.top;
+          const ratio = newK / t.k;
+          return {
+            k: newK,
+            x: mx - ratio * (mx - t.x),
+            y: my - ratio * (my - t.y),
+          };
+        });
+        return;
+      }
       if (mode === 'pan') {
-        const dx = e.clientX - last.x;
-        const dy = e.clientY - last.y;
-        last = { x: e.clientX, y: e.clientY };
+        const pt = getPoint(e);
+        const dx = pt.clientX - last.x;
+        const dy = pt.clientY - last.y;
+        last = { x: pt.clientX, y: pt.clientY };
         setTransform(t => ({ ...t, x: t.x + dx, y: t.y + dy }));
       } else if (mode === 'rotate') {
+        // For touch, prevent the page from scrolling while rotating
+        if (e.touches) e.preventDefault();
         const off = offsetFromCenter(e);
         const angle = Math.atan2(off.dy, off.dx);
         let delta = angle - lastAngle;
-        // Wrap to [-π, π] so crossing the ±π boundary doesn't snap
         if (delta > Math.PI) delta -= 2 * Math.PI;
         if (delta < -Math.PI) delta += 2 * Math.PI;
         lastAngle = angle;
         const deltaDeg = delta * 180 / Math.PI;
         setRotation(r => {
           let next = r + deltaDeg;
-          // Keep within slider's 0–360 range
           next = ((next % 360) + 360) % 360;
           return next;
         });
       }
     };
 
-    const onUp = () => { mode = null; };
+    const endDrag = () => { mode = null; };
 
     svg.addEventListener('wheel', onWheel, { passive: false });
-    svg.addEventListener('mousedown', onDown);
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
+    svg.addEventListener('mousedown', startDrag);
+    window.addEventListener('mousemove', moveDrag);
+    window.addEventListener('mouseup', endDrag);
+    // Touch equivalents — passive: false on touchmove so we can preventDefault when rotating
+    svg.addEventListener('touchstart', startDrag, { passive: true });
+    svg.addEventListener('touchmove', moveDrag, { passive: false });
+    svg.addEventListener('touchend', endDrag);
+    svg.addEventListener('touchcancel', endDrag);
     return () => {
       svg.removeEventListener('wheel', onWheel);
-      svg.removeEventListener('mousedown', onDown);
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
+      svg.removeEventListener('mousedown', startDrag);
+      window.removeEventListener('mousemove', moveDrag);
+      window.removeEventListener('mouseup', endDrag);
+      svg.removeEventListener('touchstart', startDrag);
+      svg.removeEventListener('touchmove', moveDrag);
+      svg.removeEventListener('touchend', endDrag);
+      svg.removeEventListener('touchcancel', endDrag);
     };
   }, []);
 
@@ -405,6 +473,7 @@ export default function TimeWheel() {
               display: 'block',
               cursor: 'grab',
               userSelect: 'none',
+              touchAction: 'none',
             }}
           >
             <defs>
