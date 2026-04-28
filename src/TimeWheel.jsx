@@ -200,8 +200,21 @@ export default function TimeWheel() {
   useEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
-    let dragging = false;
+    // Drag mode: 'pan' if down near center, 'rotate' if down near rim, null when not dragging
+    let mode = null;
     let last = { x: 0, y: 0 };
+    let lastAngle = 0;
+
+    // Returns { dx, dy, dist } where dx,dy are pixel offsets from the visible
+    // center of the svg element on the page
+    const offsetFromCenter = (e) => {
+      const rect = svg.getBoundingClientRect();
+      const cxPx = rect.left + rect.width / 2;
+      const cyPx = rect.top + rect.height / 2;
+      const dx = e.clientX - cxPx;
+      const dy = e.clientY - cyPx;
+      return { dx, dy, dist: Math.sqrt(dx * dx + dy * dy) };
+    };
 
     const onWheel = (e) => {
       e.preventDefault();
@@ -219,15 +232,50 @@ export default function TimeWheel() {
         };
       });
     };
-    const onDown = (e) => { dragging = true; last = { x: e.clientX, y: e.clientY }; };
-    const onMove = (e) => {
-      if (!dragging) return;
-      const dx = e.clientX - last.x;
-      const dy = e.clientY - last.y;
-      last = { x: e.clientX, y: e.clientY };
-      setTransform(t => ({ ...t, x: t.x + dx, y: t.y + dy }));
+
+    const onDown = (e) => {
+      const { dist } = offsetFromCenter(e);
+      const rect = svg.getBoundingClientRect();
+      const visibleR = Math.min(rect.width, rect.height) / 2;
+      // Inner ~50% of visible radius = pan, outer = rotate. Threshold favors rotation
+      // because that's the more common interaction users will want.
+      const rotationThreshold = visibleR * 0.5;
+      if (dist > rotationThreshold) {
+        mode = 'rotate';
+        const off = offsetFromCenter(e);
+        lastAngle = Math.atan2(off.dy, off.dx);
+      } else {
+        mode = 'pan';
+        last = { x: e.clientX, y: e.clientY };
+      }
     };
-    const onUp = () => { dragging = false; };
+
+    const onMove = (e) => {
+      if (!mode) return;
+      if (mode === 'pan') {
+        const dx = e.clientX - last.x;
+        const dy = e.clientY - last.y;
+        last = { x: e.clientX, y: e.clientY };
+        setTransform(t => ({ ...t, x: t.x + dx, y: t.y + dy }));
+      } else if (mode === 'rotate') {
+        const off = offsetFromCenter(e);
+        const angle = Math.atan2(off.dy, off.dx);
+        let delta = angle - lastAngle;
+        // Wrap to [-π, π] so crossing the ±π boundary doesn't snap
+        if (delta > Math.PI) delta -= 2 * Math.PI;
+        if (delta < -Math.PI) delta += 2 * Math.PI;
+        lastAngle = angle;
+        const deltaDeg = delta * 180 / Math.PI;
+        setRotation(r => {
+          let next = r + deltaDeg;
+          // Keep within slider's 0–360 range
+          next = ((next % 360) + 360) % 360;
+          return next;
+        });
+      }
+    };
+
+    const onUp = () => { mode = null; };
 
     svg.addEventListener('wheel', onWheel, { passive: false });
     svg.addEventListener('mousedown', onDown);
@@ -274,7 +322,6 @@ export default function TimeWheel() {
       counts.set(d.i, (counts.get(d.i) || 0) + 1);
     }
     return [...counts.entries()]
-      .filter(([, c]) => c > 1)
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   }, [nodes]);
 
@@ -461,6 +508,8 @@ export default function TimeWheel() {
                 }}
                 style={{ cursor: 'pointer' }}
               >
+                {/* Invisible larger hit target so clicking near center clears */}
+                <circle cx={cx} cy={cy} r={70} fill="rgba(0,0,0,0.001)" />
                 <circle cx={cx} cy={cy} r={32} fill="none" stroke={C.center} strokeOpacity={0.15} strokeWidth={1} />
                 <circle cx={cx} cy={cy} r={16} fill="url(#centerNode)" />
                 <text
